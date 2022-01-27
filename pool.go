@@ -1,13 +1,14 @@
 package pool
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 )
 
 const (
-	defaultCapacity = 10
-	maxCapacity     = 50
+	defaultCapacity = 100
+	maxCapacity     = 5000
 )
 
 type Pool struct {
@@ -33,7 +34,7 @@ func New(capacity int) *Pool {
 		capacity: capacity,
 		tasks:    make(chan Task),
 		quit:     make(chan struct{}),
-		active:   make(chan struct{}),
+		active:   make(chan struct{}, capacity),
 	}
 	fmt.Printf("workerpool start\n")
 	go p.run()
@@ -57,5 +58,44 @@ func (p *Pool) run() {
 }
 
 func (p *Pool) newWorker(id int) {
-	
+	p.wg.Add(1)
+	go func() {
+		defer func() {
+			if err := recover(); err != nil {
+				fmt.Printf("worker [%03d]: recover panic[%s] and exit\n", id, err)
+				<-p.active
+			}
+			p.wg.Done()
+		}()
+		fmt.Printf("worker [%03d]: start\n", id)
+
+		for {
+			select {
+			case <-p.quit:
+				fmt.Printf("worker[%03d]:exit\n", id)
+				<-p.active
+				return
+			case t := <-p.tasks:
+				fmt.Printf("worker[%03d]: receive a task\n", id)
+				t()
+			}
+		}
+	}()
+}
+
+var ErrorWorkerPoolFreed = errors.New("worker pool freed")
+
+func (p * Pool) Schedule(t Task) error {
+	select {
+		case <-p.quit:
+			return ErrorWorkerPoolFreed
+		case p.tasks <- t:
+			return nil
+	}
+}
+
+func (p * Pool) Free() {
+	close(p.quit)
+	p.wg.Wait()
+	fmt.Printf("worker pool freed\n")
 }
